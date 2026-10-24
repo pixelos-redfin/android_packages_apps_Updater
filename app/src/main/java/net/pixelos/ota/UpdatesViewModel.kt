@@ -69,7 +69,7 @@ class UpdatesViewModel(
         viewModelScope.launch {
             repository.observeLocalUpdates().collect { updates ->
                 _uiState.update { it.copy(updates = updates) }
-                if (updates.any { it.isAvailableOnline }) {
+                if (updates.isNotEmpty()) {
                     loadChangelog()
                 }
             }
@@ -100,9 +100,7 @@ class UpdatesViewModel(
                     appStateRepository.setLastCheckedTimestamp(fetchedAt)
                 }
                 _uiState.update { it.copy(isCheckingForUpdates = false) }
-                if (_uiState.value.updates.any { it.isAvailableOnline }) {
-                    loadChangelog()
-                }
+                loadChangelog()
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to fetch updates", e)
                 _uiState.update {

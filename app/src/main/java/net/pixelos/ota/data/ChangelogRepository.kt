@@ -24,8 +24,9 @@ sealed interface ChangelogState {
 
 class ChangelogRepository(private val context: Context) {
     private val client = OkHttpClient.Builder()
-        .callTimeout(10, TimeUnit.SECONDS)
-        .followRedirects(false)
+        .callTimeout(15, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
         .build()
 
     @Volatile
@@ -59,11 +60,12 @@ class ChangelogRepository(private val context: Context) {
             if (contentLength > MAX_RESPONSE_BYTES) {
                 throw IOException("Changelog is too large: $contentLength bytes")
             }
-            val bytes = body.source().readByteArray(MAX_RESPONSE_BYTES + 1)
-            if (bytes.size > MAX_RESPONSE_BYTES) {
+            val source = body.source()
+            val hasMore = source.request(MAX_RESPONSE_BYTES + 1)
+            if (hasMore) {
                 throw IOException("Changelog exceeds $MAX_RESPONSE_BYTES bytes")
             }
-            bytes.decodeToString().trim()
+            source.buffer.readByteArray().decodeToString().trim()
         }
 
         cachedKey = key

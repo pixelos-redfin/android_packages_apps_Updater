@@ -268,17 +268,45 @@ public class HttpURLConnectionClient implements DownloadClient {
             }
         }
 
+        private int processRedirects(int responseCode) throws IOException {
+            int redirects = 0;
+            final int MAX_REDIRECTS = 5;
+            while (isRedirectCode(responseCode) && redirects++ < MAX_REDIRECTS) {
+                if (mUseDuplicateLinks) {
+                    try {
+                        handleDuplicateLinks();
+                        responseCode = mClient.getResponseCode();
+                        if (!isRedirectCode(responseCode)) {
+                            break;
+                        }
+                    } catch (IOException ignored) {
+                        // Fallback to following Location header
+                    }
+                }
+                String location = mClient.getHeaderField("Location");
+                if (location == null) {
+                    break;
+                }
+                URL targetUrl = new URL(mClient.getURL(), location);
+                Log.d(TAG, "Following redirect (" + responseCode + ") to " + targetUrl);
+                changeClientUrl(targetUrl);
+                mClient.setConnectTimeout(10000);
+                mClient.connect();
+                responseCode = mClient.getResponseCode();
+            }
+            return responseCode;
+        }
+
         @Override
         public void run() {
             boolean justResumed = false;
             try {
-                mClient.setInstanceFollowRedirects(!mUseDuplicateLinks);
+                mClient.setInstanceFollowRedirects(true);
                 mClient.connect();
                 int responseCode = mClient.getResponseCode();
 
-                if (mUseDuplicateLinks && isRedirectCode(responseCode)) {
-                    handleDuplicateLinks();
-                    responseCode = mClient.getResponseCode();
+                if (isRedirectCode(responseCode)) {
+                    responseCode = processRedirects(responseCode);
                 }
 
                 if (mResume && isPartialContentCode(responseCode)) {

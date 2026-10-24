@@ -25,7 +25,7 @@ REQUIRED_AB_FILES = {
     "payload_properties.txt",
 }
 OTA_KEYS = {"datetime", "files", "type", "version"}
-OTA_OPTIONAL_KEYS = {"additional_images"}
+OTA_OPTIONAL_KEYS = {"additional_images", "incremental"}
 OTA_FILE_REQUIRED_KEYS = {
     "filename",
     "os_patch_level",
@@ -160,12 +160,11 @@ def _metadata_integer(metadata: dict[str, str], key: str) -> int:
     return result
 
 
-def build_ota_feed(artifact: Path, url: str, version: str) -> list[dict[str, Any]]:
-    _require_https(url, "OTA URL")
-    _require(bool(version.strip()), "version must not be blank")
+def build_file_metadata(artifact: Path, url: str) -> dict[str, Any]:
+    _require_https(url, f"OTA URL for {artifact.name}")
     metadata = read_ota_metadata(artifact)
     package_size = artifact.stat().st_size
-    _require(package_size > 0, "OTA artifact is empty")
+    _require(package_size > 0, f"OTA artifact is empty: {artifact}")
 
     file_metadata: dict[str, Any] = {
         "filename": artifact.name,
@@ -180,19 +179,86 @@ def build_ota_feed(artifact: Path, url: str, version: str) -> list[dict[str, Any
         parse_ota_property_files(ota_property_files, package_size)
         file_metadata["ota_property_files"] = ota_property_files
 
-    feed = [
-        {
-            "datetime": _metadata_integer(metadata, "post-timestamp"),
-            "files": [file_metadata],
-            "type": "ci",
-            "version": version.strip(),
-        }
-    ]
-    validate_ota_feed(feed, artifact=artifact)
+    return file_metadata
+
+
+def build_ota_feed(
+    artifact: Path,
+    url: str,
+    version: str,
+    incremental_artifact: Path | None = None,
+    incremental_url: str | None = None,
+    existing_feed: Path | None = None,
+) -> list[dict[str, Any]]:
+    _require_https(url, "OTA URL")
+    _require(bool(version.strip()), "version must not be blank")
+    metadata = read_ota_metadata(artifact)
+    file_metadata = build_file_metadata(artifact, url)
+
+    update_entry: dict[str, Any] = {
+        "datetime": _metadata_integer(metadata, "post-timestamp"),
+        "files": [file_metadata],
+        "type": "ci",
+        "version": version.strip(),
+    }
+
+    if incremental_artifact is not None:
+        _require(incremental_url is not None, "--incremental-url is required when --incremental-artifact is specified")
+        inc_metadata = build_file_metadata(incremental_artifact, incremental_url)
+        update_entry["incremental"] = [inc_metadata]
+
+    if existing_feed is not None:
+        feed = load_json(existing_feed)
+        _require(isinstance(feed, list), "Existing feed must be a JSON array")
+        # Replace existing entry with same datetime or filename, or prepend
+        feed = [
+            item for item in feed
+            if item.get("datetime") != update_entry["datetime"]
+            and (not item.get("files") or item["files"][0].get("filename") != file_metadata["filename"])
+        ]
+        feed.insert(0, update_entry)
+    else:
+        feed = [update_entry]
+
+    validate_ota_feed(feed, artifact=artifact, incremental_artifact=incremental_artifact)
     return feed
 
 
-def validate_ota_feed(data: Any, artifact: Path | None = None) -> None:
+def _validate_file_entry(file_value: Any, file_label: str) -> None:
+    _require(isinstance(file_value, dict), f"{file_label} must be an object")
+    _require_exact_keys(
+        file_value,
+        OTA_FILE_REQUIRED_KEYS,
+        OTA_FILE_OPTIONAL_KEYS,
+        label=file_label,
+    )
+    for key in ("filename", "os_patch_level"):
+        _require(
+            isinstance(file_value[key], str) and bool(file_value[key].strip()),
+            f"{file_label}.{key} must not be blank",
+        )
+    _require(
+        _is_integer(file_value["os_sdk_level"]) and file_value["os_sdk_level"] > 0,
+        f"{file_label}.os_sdk_level must be positive",
+    )
+    _require(
+        isinstance(file_value["sha256"], str) and bool(SHA256_RE.fullmatch(file_value["sha256"])),
+        f"{file_label}.sha256 must be lowercase hexadecimal",
+    )
+    _require(
+        _is_integer(file_value["size"]) and file_value["size"] > 0,
+        f"{file_label}.size must be positive",
+    )
+    _require_https(file_value["url"], f"{file_label}.url")
+    if "ota_property_files" in file_value:
+        parse_ota_property_files(file_value["ota_property_files"], file_value["size"])
+
+
+def validate_ota_feed(
+    data: Any,
+    artifact: Path | None = None,
+    incremental_artifact: Path | None = None,
+) -> None:
     _require(isinstance(data, list) and bool(data), "OTA feed must be a non-empty JSON array")
     for update_index, update in enumerate(data):
         label = f"update[{update_index}]"
@@ -201,40 +267,17 @@ def validate_ota_feed(data: Any, artifact: Path | None = None) -> None:
         _require(_is_integer(update["datetime"]) and update["datetime"] > 0, f"{label}.datetime must be positive")
         _require(update["type"] == "ci", f"{label}.type must be ci")
         _require(isinstance(update["version"], str) and bool(update["version"].strip()), f"{label}.version must not be blank")
+
         files = update["files"]
         _require(isinstance(files, list) and len(files) == 1, f"{label}.files must contain exactly one file")
-        file_value = files[0]
-        file_label = f"{label}.files[0]"
-        _require(isinstance(file_value, dict), f"{file_label} must be an object")
-        _require_exact_keys(
-            file_value,
-            OTA_FILE_REQUIRED_KEYS,
-            OTA_FILE_OPTIONAL_KEYS,
-            label=file_label,
-        )
-        for key in ("filename", "os_patch_level"):
-            _require(
-                isinstance(file_value[key], str) and bool(file_value[key].strip()),
-                f"{file_label}.{key} must not be blank",
-            )
-        _require(
-            _is_integer(file_value["os_sdk_level"]) and file_value["os_sdk_level"] > 0,
-            f"{file_label}.os_sdk_level must be positive",
-        )
-        _require(
-            isinstance(file_value["sha256"], str) and bool(SHA256_RE.fullmatch(file_value["sha256"])),
-            f"{file_label}.sha256 must be lowercase hexadecimal",
-        )
-        _require(
-            _is_integer(file_value["size"]) and file_value["size"] > 0,
-            f"{file_label}.size must be positive",
-        )
-        _require_https(file_value["url"], f"{file_label}.url")
-        if "ota_property_files" in file_value:
-            parse_ota_property_files(file_value["ota_property_files"], file_value["size"])
+        _validate_file_entry(files[0], f"{label}.files[0]")
+
+        if "incremental" in update and update["incremental"] is not None:
+            inc_files = update["incremental"]
+            _require(isinstance(inc_files, list) and len(inc_files) == 1, f"{label}.incremental must contain exactly one file")
+            _validate_file_entry(inc_files[0], f"{label}.incremental[0]")
 
     if artifact is not None:
-        _require(len(data) == 1, "Artifact comparison requires exactly one update")
         _require(artifact.is_file(), f"OTA artifact does not exist: {artifact}")
         update = data[0]
         file_value = update["files"][0]
@@ -249,6 +292,23 @@ def validate_ota_feed(data: Any, artifact: Path | None = None) -> None:
         _require(
             file_value.get("ota_property_files") == metadata_ranges,
             "ota_property_files does not match OTA metadata",
+        )
+
+    if incremental_artifact is not None:
+        _require(incremental_artifact.is_file(), f"Incremental artifact does not exist: {incremental_artifact}")
+        update = data[0]
+        _require("incremental" in update and update["incremental"], "Feed is missing incremental entry for artifact comparison")
+        inc_value = update["incremental"][0]
+        inc_metadata = read_ota_metadata(incremental_artifact)
+        _require(inc_value["filename"] == incremental_artifact.name, "Incremental filename does not match artifact")
+        _require(inc_value["size"] == incremental_artifact.stat().st_size, "Incremental size does not match artifact")
+        _require(inc_value["sha256"] == sha256_file(incremental_artifact), "Incremental SHA-256 does not match artifact")
+        _require(inc_value["os_patch_level"] == _metadata_value(inc_metadata, "post-security-patch-level"), "Incremental patch level does not match metadata")
+        _require(inc_value["os_sdk_level"] == _metadata_integer(inc_metadata, "post-sdk-level"), "Incremental SDK level does not match metadata")
+        inc_ranges = inc_metadata.get("ota-property-files")
+        _require(
+            inc_value.get("ota_property_files") == inc_ranges,
+            "Incremental ota_property_files does not match metadata",
         )
 
 
@@ -275,14 +335,18 @@ def create_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     generate_ota = subparsers.add_parser("generate-ota", help="generate one OTA feed entry")
-    generate_ota.add_argument("artifact", type=Path)
-    generate_ota.add_argument("--url", required=True)
-    generate_ota.add_argument("--version", required=True)
-    generate_ota.add_argument("--output", default="-")
+    generate_ota.add_argument("artifact", type=Path, help="path to full OTA zip")
+    generate_ota.add_argument("--url", required=True, help="HTTPS download URL for full OTA")
+    generate_ota.add_argument("--version", required=True, help="platform version (e.g. 17.0)")
+    generate_ota.add_argument("--incremental-artifact", type=Path, default=None, help="path to incremental OTA zip")
+    generate_ota.add_argument("--incremental-url", default=None, help="HTTPS download URL for incremental OTA")
+    generate_ota.add_argument("--existing-feed", type=Path, default=None, help="path to existing feed JSON to update")
+    generate_ota.add_argument("--output", default="-", help="output file path or '-' for stdout")
 
     validate_ota = subparsers.add_parser("validate-ota", help="validate an OTA feed")
-    validate_ota.add_argument("feed", type=Path)
-    validate_ota.add_argument("--artifact", type=Path)
+    validate_ota.add_argument("feed", type=Path, help="path to feed JSON")
+    validate_ota.add_argument("--artifact", type=Path, help="compare with full OTA zip")
+    validate_ota.add_argument("--incremental-artifact", type=Path, help="compare with incremental OTA zip")
 
     return parser
 
@@ -292,13 +356,22 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "generate-ota":
-            write_json(
-                build_ota_feed(args.artifact, args.url, args.version),
-                args.output,
+            feed = build_ota_feed(
+                args.artifact,
+                args.url,
+                args.version,
+                incremental_artifact=args.incremental_artifact,
+                incremental_url=args.incremental_url,
+                existing_feed=args.existing_feed,
             )
+            write_json(feed, args.output)
         elif args.command == "validate-ota":
-            validate_ota_feed(load_json(args.feed), artifact=args.artifact)
-        else:  # pragma: no cover - argparse enforces the command choices.
+            validate_ota_feed(
+                load_json(args.feed),
+                artifact=args.artifact,
+                incremental_artifact=args.incremental_artifact,
+            )
+        else:  # pragma: no cover
             parser.error(f"Unknown command: {args.command}")
     except (OSError, ValidationError) as error:
         parser.error(str(error))

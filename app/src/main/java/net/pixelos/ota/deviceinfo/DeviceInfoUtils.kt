@@ -41,7 +41,8 @@ object DeviceInfoUtils : SettingsLibDeviceInfoUtils() {
     val isABDevice: Boolean = SystemProperties.getBoolean(PROP_AB_DEVICE, false)
 
     @JvmStatic
-    val buildType: String = SystemProperties.get(PROP_BUILD_TYPE)
+    val buildType: String
+        get() = SystemProperties.get(PROP_BUILD_TYPE).ifBlank { "ci" }
 
     @JvmStatic
     val otaBranch: String = SystemProperties.get(PROP_OTA_BRANCH)

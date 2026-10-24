@@ -35,8 +35,9 @@ class UpdatesNetworkDataSource(private val context: Context) {
         }
 
     private val client = OkHttpClient.Builder()
-        .callTimeout(10, TimeUnit.SECONDS)
-        .followRedirects(false)
+        .callTimeout(15, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
         .build()
 
     fun fetchUpdates(): List<NetworkUpdate> {

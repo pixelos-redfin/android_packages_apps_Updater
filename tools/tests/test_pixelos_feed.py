@@ -112,5 +112,33 @@ class PixelOsFeedTest(unittest.TestCase):
         with self.assertRaisesRegex(pixelos_feed.ValidationError, "does not match artifact"):
             pixelos_feed.validate_ota_feed(feed, artifact=artifact)
 
+    def test_generate_and_validate_incremental_feed(self) -> None:
+        full_artifact = self.create_ota()
+        inc_artifact = self.directory / "PixelOS_device-incremental.zip"
+        metadata = {
+            "post-timestamp": "1781858358",
+            "post-security-patch-level": "2026-06-01",
+            "post-sdk-level": "36",
+            "ota-property-files": "payload_metadata.bin:0:1,payload.bin:1:2,payload_properties.txt:3:1",
+        }
+        rendered = "\n".join(f"{k}={v}" for k, v in metadata.items()) + "\n"
+        with zipfile.ZipFile(inc_artifact, "w") as archive:
+            archive.writestr(pixelos_feed.OTA_METADATA_PATH, rendered)
+            archive.writestr("payload.bin", b"payload")
+
+        feed = pixelos_feed.build_ota_feed(
+            full_artifact,
+            "https://downloads.pixelos.net/device/update.zip",
+            "17.0",
+            incremental_artifact=inc_artifact,
+            incremental_url="https://downloads.pixelos.net/device/incremental.zip",
+        )
+
+        pixelos_feed.validate_ota_feed(feed, artifact=full_artifact, incremental_artifact=inc_artifact)
+        self.assertIn("incremental", feed[0])
+        self.assertEqual(1, len(feed[0]["incremental"]))
+        self.assertEqual("PixelOS_device-incremental.zip", feed[0]["incremental"][0]["filename"])
+        self.assertEqual(pixelos_feed.sha256_file(inc_artifact), feed[0]["incremental"][0]["sha256"])
+
 if __name__ == "__main__":
     unittest.main()
