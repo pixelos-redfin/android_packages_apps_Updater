@@ -24,6 +24,7 @@
 
     <queries>
         <package android:name="net.pixelos.certifiedprops.overlay" />
+        <package android:name="co.aospa.android.certifiedprops.overlay" />
     </queries>
 
     <application
