@@ -85,7 +85,7 @@ class CertifiedPropsRepository(private val context: Context) {
         }
 
         val packageInfo = withContext(Dispatchers.IO) { getPackageInfo(apkPath) }
-        if (packageInfo == null || (packageInfo.packageName != packageName && packageInfo.packageName != "co.aospa.android.certifiedprops.overlay")) {
+        if (packageInfo == null || packageInfo.packageName != packageName) {
             file.delete()
             _state.value = CertifiedPropsState.Error(
                 installedVersion,
@@ -125,17 +125,15 @@ class CertifiedPropsRepository(private val context: Context) {
         context.packageManager.getPackageArchiveInfo(path, 0)
 
     private fun getLocalVersion(): Long {
-        for (pkg in listOf(packageName, "co.aospa.android.certifiedprops.overlay")) {
-            try {
-                val packageInfo = context.packageManager.getPackageInfo(
-                    pkg,
-                    0,
-                )
-                return packageInfo.longVersionCode
-            } catch (_: PackageManager.NameNotFoundException) {
-            }
+        return try {
+            val packageInfo = context.packageManager.getPackageInfo(
+                packageName,
+                PackageManager.MATCH_SYSTEM_ONLY,
+            )
+            packageInfo.longVersionCode
+        } catch (_: PackageManager.NameNotFoundException) {
+            -1
         }
-        return -1
     }
 
     private fun installApk(path: String): Boolean {
