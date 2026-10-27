@@ -200,7 +200,9 @@ private fun PreferencesContent(
         }
     }
 
-    CertifiedPropsPreferences(certifiedPropsRepository, coroutineScope)
+    if (stringResource(R.string.certified_prop_url).isNotEmpty()) {
+        CertifiedPropsPreferences(certifiedPropsRepository, coroutineScope)
+    }
 }
 
 @Composable
